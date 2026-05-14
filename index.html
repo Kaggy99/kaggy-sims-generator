@@ -9211,5 +9211,237 @@ Their current conflict is that ${sim.current_conflict}. They want to ${sim.goal}
 })();
 </script>
 
+
+<script>
+(function(){
+  const CANONICAL_KEY = "kaggy_favorites_canonical_v3";
+  const OLD_KEYS = ["kaggy_saved_collection_v1","kaggy_overhauled_favorites","kaggy_generator_favorites_v1","kaggy_favorites","favorites"];
+  const ALL_KEYS = [CANONICAL_KEY, ...OLD_KEYS];
+
+  function parseArray(raw){
+    try{ const value = JSON.parse(raw || "[]"); return Array.isArray(value) ? value : []; }
+    catch(e){ return []; }
+  }
+  function cloneData(obj){
+    try{ return structuredClone(obj); }
+    catch(e){ try{ return JSON.parse(JSON.stringify(obj)); } catch(err){ return obj; } }
+  }
+  function makeStableId(data){
+    const base = JSON.stringify({
+      name: data?.name || data?.household_name || "",
+      occult: data?.occult || "",
+      aspiration: data?.aspiration || "",
+      concept: data?.concept || "",
+      members: data?.members ? data.members.map(m => m.name).join("|") : ""
+    });
+    let hash = 0;
+    for(let i = 0; i < base.length; i++){ hash = ((hash << 5) - hash) + base.charCodeAt(i); hash |= 0; }
+    return "fav_" + Math.abs(hash).toString(36);
+  }
+  function normalize(item){
+    if(!item) return null;
+    const data = item.data || item;
+    if(!data) return null;
+    return {
+      id: item.id || makeStableId(data),
+      type: item.type || (data.members ? "Household" : "Sim"),
+      label: item.label || item.name || data.household_name || data.name || "Saved Favorite",
+      occult: item.occult || (data.members ? "Mixed" : data.occult || ""),
+      aspiration: item.aspiration || (data.members ? data.concept || "" : data.aspiration || ""),
+      created: item.created || item.favorited_at || new Date().toLocaleString(),
+      data
+    };
+  }
+  function itemKey(item){
+    const data = item?.data || item;
+    return JSON.stringify({
+      label: item?.label || data?.name || data?.household_name || "",
+      type: item?.type || (data?.members ? "Household" : "Sim"),
+      occult: item?.occult || data?.occult || "",
+      aspiration: item?.aspiration || data?.aspiration || data?.concept || "",
+      names: data?.members ? data.members.map(m => m.name).join("|") : data?.name || data?.household_name || ""
+    });
+  }
+  function readFavorites(){
+    let source = localStorage.getItem(CANONICAL_KEY);
+    let pools = source ? [CANONICAL_KEY] : ALL_KEYS;
+    const merged = [], seen = new Set();
+    pools.forEach(key => {
+      parseArray(localStorage.getItem(key)).forEach(raw => {
+        const item = normalize(raw);
+        if(!item) return;
+        const k = itemKey(item);
+        if(!seen.has(k)){ merged.push(item); seen.add(k); }
+      });
+    });
+    return merged;
+  }
+  function writeFavorites(items){
+    const clean = [], seen = new Set();
+    (items || []).forEach(raw => {
+      const item = normalize(raw);
+      if(!item) return;
+      const k = itemKey(item);
+      if(!seen.has(k)){ clean.push(item); seen.add(k); }
+    });
+    localStorage.setItem(CANONICAL_KEY, JSON.stringify(clean));
+    OLD_KEYS.forEach(key => localStorage.removeItem(key));
+    try{ window.kaggyFavorites = clean; }catch(e){}
+    return clean;
+  }
+  function escapeHtml(value){
+    return String(value ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function renderFavorites(){
+    const tab = document.getElementById("collectionTab");
+    if(!tab) return;
+    const items = readFavorites();
+    const controls = `
+      <div class="export-actions">
+        <button class="btn btn-sm btn-sky" type="button" data-fav-action="export">⤓ Export Favorites</button>
+        <button class="btn btn-sm btn-teal" type="button" data-fav-action="import">⤒ Import Favorites</button>
+        ${items.length ? `<button class="btn btn-sm btn-rose" type="button" data-fav-action="clear">Clear Favorites</button>` : ""}
+      </div>`;
+    if(!items.length){
+      tab.innerHTML = `<div class="panel-grid"><div class="panel col-12 favorite-card"><div class="collection-toolbar"><div><div class="panel-title">Favorites</div><div class="small-note">Saved Sims and households will show here.</div></div>${controls}</div><div class="collection-empty">No favorites saved yet. Generate a Sim or household, then press Favorite.</div></div></div>`;
+      return;
+    }
+    tab.innerHTML = `<div class="panel-grid"><div class="panel col-12 favorite-card"><div class="collection-toolbar"><div><div class="panel-title">Favorites</div><div class="small-note">${items.length} saved favorite${items.length === 1 ? "" : "s"} in this browser.</div></div>${controls}</div><div class="collection-grid">${items.map(item => `<div class="collection-card" data-fav-id="${escapeHtml(item.id)}"><div class="collection-name">★ ${escapeHtml(item.label)}</div><div class="small-note">${escapeHtml(item.type)}${item.occult ? " • " + escapeHtml(item.occult) : ""}${item.aspiration ? " • " + escapeHtml(item.aspiration) : ""}</div><div class="small-note">${escapeHtml(item.created || "")}</div><div class="collection-actions"><button class="btn btn-sm btn-sky" type="button" data-fav-action="load" data-fav-id="${escapeHtml(item.id)}">Load</button><button class="btn btn-sm btn-teal" type="button" data-fav-action="copy" data-fav-id="${escapeHtml(item.id)}">Copy</button><button class="btn btn-sm btn-rose" type="button" data-fav-action="delete" data-fav-id="${escapeHtml(item.id)}">Remove</button></div></div>`).join("")}</div></div></div>`;
+  }
+  function ensureImportInput(){
+    let input = document.getElementById("favoritesImportInput");
+    if(!input){
+      input = document.createElement("input");
+      input.type = "file";
+      input.id = "favoritesImportInput";
+      input.accept = ".json,application/json";
+      input.style.display = "none";
+      document.body.appendChild(input);
+    }
+    input.onchange = importFavoritesFromFile;
+    return input;
+  }
+  function openFavTab(){
+    if(typeof window.openTabById === "function") window.openTabById("collectionTab");
+    else if(typeof window.showTab === "function"){
+      const btn = [...document.querySelectorAll(".tab-btn")].find(b => (b.getAttribute("onclick") || "").includes("'collectionTab'"));
+      window.showTab("collectionTab", btn);
+    }
+    renderFavorites();
+  }
+  function addFavorite(){
+    if(!window.current){ alert("Generate a Sim or household first."); return; }
+    const data = cloneData(window.current);
+    const item = normalize({
+      id: Date.now() + "_" + Math.random().toString(36).slice(2,8),
+      type: data.members ? "Household" : "Sim",
+      label: data.household_name || data.name || "Saved Favorite",
+      occult: data.members ? "Mixed" : data.occult || "",
+      aspiration: data.members ? data.concept || "" : data.aspiration || "",
+      data, created: new Date().toLocaleString()
+    });
+    const items = readFavorites();
+    if(!items.some(x => itemKey(x) === itemKey(item))) items.unshift(item);
+    writeFavorites(items);
+    openFavTab();
+  }
+  function deleteFavorite(id){ writeFavorites(readFavorites().filter(item => String(item.id) !== String(id))); renderFavorites(); }
+  function loadFavorite(id){
+    const item = readFavorites().find(x => String(x.id) === String(id));
+    if(!item) return;
+    const data = cloneData(item.data);
+    if(data.members && typeof window.renderHousehold === "function") window.renderHousehold(data);
+    else if(typeof window.renderSim === "function") window.renderSim(data);
+    else window.current = data;
+  }
+  function copyFavorite(id){
+    const item = readFavorites().find(x => String(x.id) === String(id));
+    if(!item) return;
+    navigator.clipboard.writeText(JSON.stringify(item.data || item, null, 2));
+    alert("Favorite copied.");
+  }
+  function exportFavorites(){
+    const favorites = readFavorites();
+    const payload = { type:"kaggy-favorites-backup", version:3, exported_at:new Date().toISOString(), count:favorites.length, favorites };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `kaggy_favorites_backup_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  async function importFavoritesFromFile(event){
+    const file = event?.target?.files?.[0];
+    if(!file) return;
+    try{
+      const parsed = JSON.parse(await file.text());
+      const imported = Array.isArray(parsed) ? parsed : Array.isArray(parsed.favorites) ? parsed.favorites : null;
+      if(!imported) throw new Error("Invalid favorites file.");
+      const current = readFavorites();
+      const merged = [...current], seen = new Set(current.map(itemKey));
+      imported.forEach(raw => {
+        const item = normalize(raw);
+        if(!item) return;
+        const k = itemKey(item);
+        if(!seen.has(k)){ merged.push(item); seen.add(k); }
+      });
+      writeFavorites(merged);
+      renderFavorites();
+      alert(`Imported ${imported.length} favorite(s). You now have ${readFavorites().length} saved favorite(s).`);
+    }catch(e){ alert("That file could not be imported. Please choose a valid Favorites backup JSON file."); }
+  }
+  function installButtons(){
+    document.querySelectorAll("button").forEach(btn => {
+      const attr = btn.getAttribute("onclick") || "";
+      if(attr.includes("favoriteCurrentResult") || attr.includes("saveToFavorites")) btn.setAttribute("onclick","favoriteCurrentResult()");
+      if(attr.includes("openFavoritesTab") || attr.includes("openCollectionTab")){
+        btn.setAttribute("onclick","openFavoritesTab()");
+        btn.textContent = "★ Favorites";
+      }
+    });
+    ensureImportInput();
+  }
+  window.favoriteCurrentResult = addFavorite;
+  window.saveToFavorites = addFavorite;
+  window.openFavoritesTab = openFavTab;
+  window.openCollectionTab = openFavTab;
+  window.renderFavoritesTab = renderFavorites;
+  window.loadFavoritesEntry = loadFavorite;
+  window.deleteFavoritesEntry = deleteFavorite;
+  window.copyFavoritesEntry = copyFavorite;
+  window.clearFavorites = function(){ if(confirm("Clear all favorites?")){ writeFavorites([]); renderFavorites(); } };
+  window.exportFavorites = exportFavorites;
+  window.triggerImportFavorites = function(){ const input = ensureImportInput(); input.value = ""; input.click(); };
+  window.importFavoritesFromFile = importFavoritesFromFile;
+
+  document.addEventListener("click", function(event){
+    const btn = event.target.closest("[data-fav-action]");
+    if(!btn) return;
+    const action = btn.dataset.favAction, id = btn.dataset.favId;
+    if(action === "load") loadFavorite(id);
+    if(action === "copy") copyFavorite(id);
+    if(action === "delete") deleteFavorite(id);
+    if(action === "clear") window.clearFavorites();
+    if(action === "export") exportFavorites();
+    if(action === "import") window.triggerImportFavorites();
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  const oldShowTab = window.showTab;
+  if(typeof oldShowTab === "function"){
+    window.showTab = function(id, el){ oldShowTab(id, el); installButtons(); if(id === "collectionTab") renderFavorites(); };
+  }
+  const oldGenerate = window.generate;
+  if(typeof oldGenerate === "function"){
+    window.generate = function(){ oldGenerate(); installButtons(); };
+  }
+
+  writeFavorites(readFavorites());
+  installButtons();
+  renderFavorites();
+})();
+</script>
+
 </body>
 </html>
