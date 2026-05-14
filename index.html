@@ -1374,6 +1374,9 @@ body.lite-mode-fixed .stable-card {
       <button class="btn btn-sky" onclick="generateConnectedSim()">🔗 Connected Sim</button>
       <button class="btn btn-teal" onclick="copyFullProfile()">📋 Copy Profile</button>
       <button class="btn btn-rose" onclick="favoriteCurrentResult()">★ Favorite</button>
+      <button class="btn btn-sky" onclick="exportFavorites()">⤓ Export Favorites</button>
+      <button class="btn btn-teal" onclick="triggerImportFavorites()">⤒ Import Favorites</button>
+      <input type="file" id="favoritesImportInput" accept=".json,application/json" style="display:none" onchange="importFavoritesFromFile(event)">
       <button class="btn btn-sky" onclick="generatePlaySessionPrompt()">🎮 Play Prompt</button>
       <button class="btn btn-teal" onclick="generateMatchingHousehold()">👥 Matching Household</button>
       <button class="btn btn-sky" onclick="generateSeasonalEvents()">🍂 Seasonal Events</button>
@@ -8853,6 +8856,358 @@ Their current conflict is that ${sim.current_conflict}. They want to ${sim.goal}
     if(typeof oldToggle === "function") oldToggle(force);
     removeOldHelpSections();
   };
+})();
+</script>
+
+
+<script>
+(function(){
+  const FAVORITES_KEY = "kaggy_saved_collection_v1";
+  const LEGACY_KEYS = [
+    "kaggy_saved_collection_v1",
+    "kaggy_overhauled_favorites",
+    "kaggy_generator_favorites_v1",
+    "kaggy_favorites",
+    "favorites"
+  ];
+
+  function safeParse(raw){
+    try{
+      const parsed = JSON.parse(raw || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    }catch(e){
+      return [];
+    }
+  }
+
+  function safeClone(obj){
+    try{
+      return structuredClone(obj);
+    }catch(e){
+      try{
+        return JSON.parse(JSON.stringify(obj));
+      }catch(err){
+        return obj;
+      }
+    }
+  }
+
+  function getAllFavorites(){
+    const merged = [];
+    const seen = new Set();
+
+    LEGACY_KEYS.forEach(key => {
+      const items = safeParse(localStorage.getItem(key));
+      items.forEach(item => {
+        const id = item.id || JSON.stringify(item).slice(0, 120);
+        if(!seen.has(id)){
+          merged.push(item);
+          seen.add(id);
+        }
+      });
+    });
+
+    return merged;
+  }
+
+  function saveAllFavorites(items){
+    const clean = Array.isArray(items) ? items : [];
+    localStorage.setItem(FAVORITES_KEY, JSON.stringify(clean));
+    try{
+      window.kaggyFavorites = clean;
+    }catch(e){}
+  }
+
+  function normalizeFavorite(item){
+    if(!item) return null;
+
+    if(item.data){
+      return {
+        id: item.id || Date.now() + "_" + Math.random().toString(36).slice(2,7),
+        type: item.type || (item.data.members ? "Household" : "Sim"),
+        label: item.label || item.name || item.data.household_name || item.data.name || "Saved Favorite",
+        occult: item.occult || (item.data.members ? "Mixed" : item.data.occult || ""),
+        aspiration: item.aspiration || (item.data.members ? item.data.concept || "" : item.data.aspiration || ""),
+        data: item.data,
+        created: item.created || item.favorited_at || new Date().toLocaleString()
+      };
+    }
+
+    return {
+      id: item.id || Date.now() + "_" + Math.random().toString(36).slice(2,7),
+      type: item.members ? "Household" : "Sim",
+      label: item.household_name || item.name || "Saved Favorite",
+      occult: item.members ? "Mixed" : item.occult || "",
+      aspiration: item.members ? item.concept || "" : item.aspiration || "",
+      data: item,
+      created: item.created || new Date().toLocaleString()
+    };
+  }
+
+  function readFavorites(){
+    return getAllFavorites().map(normalizeFavorite).filter(Boolean);
+  }
+
+  function writeFavorites(items){
+    saveAllFavorites(items.map(normalizeFavorite).filter(Boolean));
+  }
+
+  function getCollectionTab(){
+    return document.getElementById("collectionTab");
+  }
+
+  function renderRobustFavoritesTab(){
+    const tab = getCollectionTab();
+    if(!tab) return;
+
+    const items = readFavorites();
+    if(!items.length){
+      tab.innerHTML = `
+        <div class="panel-grid">
+          <div class="panel col-12 favorite-card">
+            <div class="collection-toolbar">
+              <div>
+                <div class="panel-title">Favorites</div>
+                <div class="small-note">Saved Sims and households will show here.</div>
+              </div>
+              <div class="export-actions">
+                <button class="btn btn-sm btn-sky" onclick="exportFavorites()">⤓ Export Favorites</button>
+                <button class="btn btn-sm btn-teal" onclick="triggerImportFavorites()">⤒ Import Favorites</button>
+              </div>
+            </div>
+            <div class="collection-empty">No favorites saved yet. Generate a Sim or household, then press Favorite.</div>
+          </div>
+        </div>`;
+      return;
+    }
+
+    tab.innerHTML = `
+      <div class="panel-grid">
+        <div class="panel col-12 favorite-card">
+          <div class="collection-toolbar">
+            <div>
+              <div class="panel-title">Favorites</div>
+              <div class="small-note">${items.length} saved favorite${items.length === 1 ? "" : "s"} in this browser.</div>
+            </div>
+            <div class="export-actions">
+              <button class="btn btn-sm btn-sky" onclick="exportFavorites()">⤓ Export Favorites</button>
+              <button class="btn btn-sm btn-teal" onclick="triggerImportFavorites()">⤒ Import Favorites</button>
+              <button class="btn btn-sm btn-rose" onclick="clearFavorites()">Clear Favorites</button>
+            </div>
+          </div>
+          <div class="collection-grid">
+            ${items.map(item => `
+              <div class="collection-card">
+                <div class="collection-name">★ ${escapeHtml(item.label)}</div>
+                <div class="small-note">${escapeHtml(item.type)}${item.occult ? " • " + escapeHtml(item.occult) : ""}${item.aspiration ? " • " + escapeHtml(item.aspiration) : ""}</div>
+                <div class="small-note">${escapeHtml(item.created || "")}</div>
+                <div class="collection-actions">
+                  <button class="btn btn-sm btn-sky" onclick="loadFavoritesEntry('${escapeAttr(item.id)}')">Load</button>
+                  <button class="btn btn-sm btn-teal" onclick="copyFavoritesEntry('${escapeAttr(item.id)}')">Copy</button>
+                  <button class="btn btn-sm btn-rose" onclick="deleteFavoritesEntry('${escapeAttr(item.id)}')">Remove</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function escapeHtml(value){
+    return String(value ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function escapeAttr(value){
+    return String(value ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  }
+
+  function ensureImportInput(){
+    let input = document.getElementById("favoritesImportInput");
+    if(!input){
+      input = document.createElement("input");
+      input.type = "file";
+      input.id = "favoritesImportInput";
+      input.accept = ".json,application/json";
+      input.style.display = "none";
+      input.addEventListener("change", window.importFavoritesFromFile);
+      document.body.appendChild(input);
+    }
+    return input;
+  }
+
+  function ensureFavoriteButtons(){
+    const favoriteBtn = [...document.querySelectorAll("button")].find(btn => (btn.getAttribute("onclick") || "").includes("favoriteCurrentResult"));
+    if(!favoriteBtn) return;
+
+    const parent = favoriteBtn.parentElement;
+    if(parent && ![...parent.querySelectorAll("button")].some(btn => (btn.getAttribute("onclick") || "").includes("exportFavorites"))){
+      const exportBtn = document.createElement("button");
+      exportBtn.className = "btn btn-sky";
+      exportBtn.setAttribute("onclick", "exportFavorites()");
+      exportBtn.textContent = "⤓ Export Favorites";
+
+      const importBtn = document.createElement("button");
+      importBtn.className = "btn btn-teal";
+      importBtn.setAttribute("onclick", "triggerImportFavorites()");
+      importBtn.textContent = "⤒ Import Favorites";
+
+      favoriteBtn.insertAdjacentElement("afterend", importBtn);
+      favoriteBtn.insertAdjacentElement("afterend", exportBtn);
+    }
+    ensureImportInput();
+  }
+
+  window.favoriteCurrentResult = function(){
+    const current = window.current;
+    if(!current){
+      alert("Generate a Sim or household first.");
+      return;
+    }
+
+    const data = safeClone(current);
+    const item = normalizeFavorite({
+      id: Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      type: data.members ? "Household" : "Sim",
+      label: data.household_name || data.name || "Saved Favorite",
+      occult: data.members ? "Mixed" : data.occult || "",
+      aspiration: data.members ? data.concept || "" : data.aspiration || "",
+      data: data,
+      created: new Date().toLocaleString()
+    });
+
+    const items = readFavorites();
+    items.unshift(item);
+    writeFavorites(items);
+
+    renderRobustFavoritesTab();
+    window.openFavoritesTab();
+  };
+
+  window.saveToFavorites = window.favoriteCurrentResult;
+
+  window.openFavoritesTab = function(){
+    if(typeof window.openTabById === "function"){
+      window.openTabById("collectionTab");
+    } else if(typeof window.showTab === "function"){
+      const btn = [...document.querySelectorAll(".tab-btn")].find(b => (b.getAttribute("onclick") || "").includes("'collectionTab'"));
+      window.showTab("collectionTab", btn);
+    }
+    renderRobustFavoritesTab();
+  };
+
+  window.loadFavoritesEntry = function(id){
+    const item = readFavorites().find(x => String(x.id) === String(id));
+    if(!item || !item.data) return;
+
+    if(item.data.members && typeof window.renderHousehold === "function"){
+      window.renderHousehold(item.data);
+    } else if(typeof window.renderSim === "function"){
+      window.renderSim(item.data);
+    } else {
+      window.current = item.data;
+    }
+  };
+
+  window.copyFavoritesEntry = function(id){
+    const item = readFavorites().find(x => String(x.id) === String(id));
+    if(!item) return;
+    navigator.clipboard.writeText(JSON.stringify(item.data || item, null, 2));
+    alert("Favorite copied.");
+  };
+
+  window.deleteFavoritesEntry = function(id){
+    const items = readFavorites().filter(x => String(x.id) !== String(id));
+    writeFavorites(items);
+    renderRobustFavoritesTab();
+  };
+
+  window.clearFavorites = function(){
+    if(confirm("Clear all favorites?")){
+      writeFavorites([]);
+      renderRobustFavoritesTab();
+    }
+  };
+
+  window.exportFavorites = function(){
+    const favorites = readFavorites();
+    const payload = {
+      type: "kaggy-favorites-backup",
+      version: 2,
+      exported_at: new Date().toISOString(),
+      count: favorites.length,
+      favorites: favorites
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type: "application/json"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const stamp = new Date().toISOString().slice(0,10);
+    a.href = url;
+    a.download = `kaggy_favorites_backup_${stamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  window.triggerImportFavorites = function(){
+    const input = ensureImportInput();
+    input.value = "";
+    input.click();
+  };
+
+  window.importFavoritesFromFile = async function(event){
+    const file = event?.target?.files?.[0];
+    if(!file) return;
+
+    try{
+      const raw = await file.text();
+      const parsed = JSON.parse(raw);
+      const imported = Array.isArray(parsed) ? parsed : Array.isArray(parsed.favorites) ? parsed.favorites : null;
+
+      if(!imported){
+        throw new Error("Invalid favorites backup.");
+      }
+
+      const existing = readFavorites();
+      const merged = [...existing];
+      const seen = new Set(existing.map(x => JSON.stringify(x.data || x)));
+
+      imported.map(normalizeFavorite).filter(Boolean).forEach(item => {
+        const key = JSON.stringify(item.data || item);
+        if(!seen.has(key)){
+          merged.push(item);
+          seen.add(key);
+        }
+      });
+
+      writeFavorites(merged);
+      renderRobustFavoritesTab();
+      alert(`Imported ${imported.length} favorite(s). You now have ${merged.length} saved favorite(s).`);
+    }catch(e){
+      alert("That file could not be imported. Please choose a valid Favorites backup JSON file.");
+    }
+  };
+
+  const previousShowTab = window.showTab;
+  if(typeof previousShowTab === "function"){
+    window.showTab = function(id, el){
+      previousShowTab(id, el);
+      if(id === "collectionTab") renderRobustFavoritesTab();
+      ensureFavoriteButtons();
+    };
+  }
+
+  const previousGenerate = window.generate;
+  if(typeof previousGenerate === "function"){
+    window.generate = function(){
+      previousGenerate();
+      ensureFavoriteButtons();
+    };
+  }
+
+  ensureFavoriteButtons();
+  renderRobustFavoritesTab();
 })();
 </script>
 
